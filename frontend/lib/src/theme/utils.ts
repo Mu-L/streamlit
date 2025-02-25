@@ -71,7 +71,7 @@ declare global {
     >
   }
 }
-const log = getLogger("theme:utils")
+const LOG = getLogger("theme:utils")
 
 function mergeTheme(
   theme: ThemeConfig,
@@ -152,7 +152,7 @@ export const createEmotionTheme = (
 ): EmotionTheme => {
   const { colors, genericFonts } = baseThemeConfig.emotion
   const {
-    fontSizes,
+    baseFontSize,
     roundness,
     showBorderAroundInputs,
     bodyFont,
@@ -248,25 +248,13 @@ export const createEmotionTheme = (
     )
   }
 
-  if (fontSizes) {
+  if (baseFontSize && baseFontSize > 0) {
     conditionalOverrides.fontSizes = {
       ...baseThemeConfig.emotion.fontSizes,
     }
 
-    if (fontSizes.tinyFontSize) {
-      conditionalOverrides.fontSizes.twoSm = addPxUnit(fontSizes.tinyFontSize)
-      conditionalOverrides.fontSizes.twoSmPx = fontSizes.tinyFontSize
-    }
-
-    if (fontSizes.smallFontSize) {
-      conditionalOverrides.fontSizes.sm = addPxUnit(fontSizes.smallFontSize)
-      conditionalOverrides.fontSizes.smPx = fontSizes.smallFontSize
-    }
-
-    if (fontSizes.baseFontSize) {
-      conditionalOverrides.fontSizes.md = addPxUnit(fontSizes.baseFontSize)
-      conditionalOverrides.fontSizes.mdPx = fontSizes.baseFontSize
-    }
+    // Set the root font size to the configured value (used on global styles):
+    conditionalOverrides.fontSizes.baseFontSize = baseFontSize
   }
 
   return {
@@ -499,17 +487,13 @@ export function computeSpacingStyle(
       }
 
       if (!(marginValue in theme.spacing)) {
-        log.error(`Invalid spacing value: ${marginValue}`)
+        LOG.error(`Invalid spacing value: ${marginValue}`)
         return theme.spacing.none
       }
 
       return theme.spacing[marginValue as ThemeSpacing]
     })
     .join(" ")
-}
-
-function addPxUnit(n: number): string {
-  return `${n}px`
 }
 
 function addRemUnit(n: number): string {
