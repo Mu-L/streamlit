@@ -22,6 +22,7 @@ import { enableAllPlugins as enableImmerPlugins } from "immer"
 import classNames from "classnames"
 import without from "lodash/without"
 import { getLogger } from "loglevel"
+import { flushSync } from "react-dom"
 
 import {
   AppRoot,
@@ -194,11 +195,9 @@ interface State {
   inputsDisabled: boolean
 }
 
-const ELEMENT_LIST_BUFFER_TIMEOUT_MS = 10
-
 const INITIAL_SCRIPT_RUN_ID = "<null>"
 
-export const log = getLogger("App")
+export const LOG = getLogger("App")
 
 // eslint-disable-next-line
 declare global {
@@ -235,24 +234,13 @@ export class App extends PureComponent<Props, State> {
 
   private readonly uploadClient: FileUploadClient
 
-  /**
-   * When new Deltas are received, they are applied to `pendingElementsBuffer`
-   * rather than directly to `this.state.elements`. We assign
-   * `pendingElementsBuffer` to `this.state` on a timer, in order to
-   * decouple Delta updates from React re-renders, for performance reasons.
-   *
-   * (If `pendingElementsBuffer === this.state.elements` - the default state -
-   * then we have no pending elements.)
-   */
-  private pendingElementsBuffer: AppRoot
-
-  private pendingElementsTimerRunning: boolean
-
   private readonly componentRegistry: ComponentRegistry
 
   private readonly embeddingId: string = generateUID()
 
   private readonly appNavigation: AppNavigation
+
+  private isInitializingConnectionManager: boolean = true
 
   public constructor(props: Props) {
     super(props)
@@ -371,6 +359,9 @@ export class App extends PureComponent<Props, State> {
       },
       restartWebsocketConnection: () => {
         if (!this.connectionManager) {
+          // Performing an intentional restart - we want the script to rerun on load
+          // so setting RERUN_REQUESTED so handleConnectionStateChanged triggers it
+          this.setState({ scriptRunState: ScriptRunState.RERUN_REQUESTED })
           this.initializeConnectionManager()
         }
       },
@@ -399,8 +390,6 @@ export class App extends PureComponent<Props, State> {
 
     this.componentRegistry = new ComponentRegistry(this.endpoints)
 
-    this.pendingElementsTimerRunning = false
-    this.pendingElementsBuffer = this.state.elements
     this.appNavigation = new AppNavigation(
       this.hostCommunicationMgr,
       this.maybeUpdatePageUrl,
@@ -416,6 +405,8 @@ export class App extends PureComponent<Props, State> {
   }
 
   initializeConnectionManager(): void {
+    this.isInitializingConnectionManager = true
+
     this.connectionManager = new ConnectionManager({
       getLastSessionId: () => this.sessionInfo.last?.sessionId,
       endpoints: this.endpoints,
@@ -456,6 +447,8 @@ export class App extends PureComponent<Props, State> {
         this.setLibConfig(libConfig)
       },
     })
+
+    this.isInitializingConnectionManager = false
   }
 
   componentDidMount(): void {
@@ -518,11 +511,15 @@ export class App extends PureComponent<Props, State> {
       mark(this.state.scriptRunState)
 
       if (this.state.scriptRunState === ScriptRunState.NOT_RUNNING) {
-        measure(
-          "script-run-cycle",
-          ScriptRunState.RUNNING,
-          ScriptRunState.NOT_RUNNING
-        )
+        try {
+          measure(
+            "script-run-cycle",
+            ScriptRunState.RUNNING,
+            ScriptRunState.NOT_RUNNING
+          )
+        } catch (err) {
+          // It's okay if this fails, the `measure` call is for debugging/profiling
+        }
       }
 
       this.hostCommunicationMgr.sendMessageToHost({
@@ -554,7 +551,7 @@ export class App extends PureComponent<Props, State> {
   }
 
   showError(title: string, errorMarkdown: string): void {
-    log.error(errorMarkdown)
+    LOG.error(errorMarkdown)
     const newDialog: DialogProps = {
       type: DialogType.WARNING,
       title,
@@ -627,24 +624,29 @@ export class App extends PureComponent<Props, State> {
    * Called by ConnectionManager when our connection state changes
    */
   handleConnectionStateChanged = (newState: ConnectionState): void => {
-    log.info(
+    LOG.info(
       `Connection state changed from ${this.state.connectionState} to ${newState}`
     )
 
     if (newState === ConnectionState.CONNECTED) {
-      log.info("Reconnected to server.")
-
-      const lastRunWasInterrupted =
-        this.state.scriptRunState === ScriptRunState.RERUN_REQUESTED ||
-        this.state.scriptRunState === ScriptRunState.RUNNING
-
+      LOG.info("Reconnected to server.")
       // We request a script rerun if:
       //   1. this is the first time we establish a websocket connection to the
       //      server, or
       //   2. our last script run attempt was interrupted by the websocket
-      //      connection dropping.
-      if (!this.sessionInfo.last || lastRunWasInterrupted) {
-        log.info("Requesting a script run.")
+      //      connection dropping, or
+      //   3. the host explicitly requested a reconnect (we trigger scriptRunState to be RERUN_REQUESTED)
+      const lastRunWasInterrupted =
+        this.state.scriptRunState === ScriptRunState.RUNNING
+      const wasRerunRequested =
+        this.state.scriptRunState === ScriptRunState.RERUN_REQUESTED
+
+      if (
+        !this.sessionInfo.last ||
+        lastRunWasInterrupted ||
+        wasRerunRequested
+      ) {
+        LOG.info("Requesting a script run.")
         this.widgetMgr.sendUpdateWidgetsMessage(undefined)
         this.setState({ dialog: null })
       }
@@ -668,7 +670,21 @@ export class App extends PureComponent<Props, State> {
       }
     }
 
-    this.setState({ connectionState: newState })
+    if (this.isInitializingConnectionManager) {
+      // If we use `flushSync` while the component is mounting, we will see a warning about
+      // "Warning: flushSync was called from inside a lifecycle method."
+      // The setState will be applied in the expected render cycle in this case.
+      this.setState({ connectionState: newState })
+    } else {
+      // We are using `flushSync` here because there is code that expects every
+      // state to be observed. With React batched updates, it is possible that
+      // multiple `connectionState` changes are applied in 1 render cycle, leading
+      // to the last state change being the only one observed. Utilizing
+      // `flushSync` ensures that we apply every state change.
+      flushSync(() => {
+        this.setState({ connectionState: newState })
+      })
+    }
   }
 
   handleGitInfoChanged = (gitInfo: IGitInfo): void => {
@@ -684,7 +700,7 @@ export class App extends PureComponent<Props, State> {
         message: parentMessage.message,
       })
     } else {
-      log.error(
+      LOG.error(
         "Sending messages to the host is disabled in line with the platform policy."
       )
     }
@@ -721,8 +737,8 @@ export class App extends PureComponent<Props, State> {
           this.handlePageConfigChanged(pageConfig),
         pageInfoChanged: (pageInfo: PageInfo) =>
           this.handlePageInfoChanged(pageInfo),
-        pagesChanged: (pagesChangedMsg: PagesChanged) =>
-          this.handlePagesChanged(pagesChangedMsg),
+        // Deprecated protobuf option as navigation will always inform us of pages
+        pagesChanged: (_pagesChangedMsg: PagesChanged) => {},
         pageNotFound: (pageNotFound: PageNotFound) =>
           this.handlePageNotFound(pageNotFound),
         gitInfoChanged: (gitInfo: GitInfo) =>
@@ -753,29 +769,21 @@ export class App extends PureComponent<Props, State> {
       })
     } catch (e) {
       const err = ensureError(e)
-      log.error(err)
+      LOG.error(err)
       this.showError("Bad message format", err.message)
     }
   }
 
   handleLogo = (logo: Logo, metadata: ForwardMsgMetadata): void => {
-    // Pass the current page & run ID for cleanup
-    const logoMetadata = {
-      activeScriptHash: metadata.activeScriptHash,
-      scriptRunId: this.state.scriptRunId,
-    }
-
-    this.setState(
-      {
-        elements: this.pendingElementsBuffer.appRootWithLogo(
-          logo,
-          logoMetadata
-        ),
-      },
-      () => {
-        this.pendingElementsBuffer = this.state.elements
+    this.setState(prevState => {
+      return {
+        elements: prevState.elements.appRootWithLogo(logo, {
+          // Pass the current page & run ID for cleanup
+          activeScriptHash: metadata.activeScriptHash,
+          scriptRunId: prevState.scriptRunId,
+        }),
       }
-    )
+    })
   }
 
   handlePageConfigChanged = (pageConfig: PageConfig): void => {
@@ -837,7 +845,8 @@ export class App extends PureComponent<Props, State> {
   }
 
   handlePageNotFound = (pageNotFound: PageNotFound): void => {
-    this.maybeSetState(this.appNavigation.handlePageNotFound(pageNotFound))
+    const { pageName } = pageNotFound
+    this.maybeSetState(this.appNavigation.handlePageNotFound(pageName))
   }
 
   onPageIconChanged = (iconUrl: string): void => {
@@ -846,10 +855,6 @@ export class App extends PureComponent<Props, State> {
       this.hostCommunicationMgr.sendMessageToHost,
       this.endpoints
     )
-  }
-
-  handlePagesChanged = (pagesChangedMsg: PagesChanged): void => {
-    this.maybeSetState(this.appNavigation.handlePagesChanged(pagesChangedMsg))
   }
 
   handleNavigation = (navigationMsg: Navigation): void => {
@@ -1205,11 +1210,11 @@ export class App extends PureComponent<Props, State> {
       status ===
         ForwardMsg.ScriptFinishedStatus.FINISHED_FRAGMENT_RUN_SUCCESSFULLY
     ) {
-      window.setTimeout(() => {
+      Promise.resolve().then(() => {
         // Notify any subscribers of this event (and do it on the next cycle of
         // the event loop)
-        this.state.scriptFinishedHandlers.map(handler => handler())
-      }, 0)
+        this.state.scriptFinishedHandlers.forEach(handler => handler())
+      })
 
       if (
         status === ForwardMsg.ScriptFinishedStatus.FINISHED_SUCCESSFULLY ||
@@ -1224,26 +1229,26 @@ export class App extends PureComponent<Props, State> {
         // We also don't do this if our script had a compilation error and didn't
         // finish successfully.
         this.setState(
-          ({ scriptRunId, fragmentIdsThisRun }) => ({
-            // Apply any pending elements that haven't been applied.
-            elements: this.pendingElementsBuffer.clearStaleNodes(
-              scriptRunId,
-              fragmentIdsThisRun
-            ),
-          }),
+          ({ scriptRunId, fragmentIdsThisRun, elements }) => {
+            return {
+              // Apply any pending elements that haven't been applied.
+              elements: elements.clearStaleNodes(
+                scriptRunId,
+                fragmentIdsThisRun
+              ),
+            }
+          },
           () => {
-            this.pendingElementsBuffer = this.state.elements
+            // Tell the WidgetManager which widgets still exist. It will remove
+            // widget state for widgets that have been removed.
+            const activeWidgetIds = new Set(
+              Array.from(this.state.elements.getElements())
+                .map(element => getElementId(element))
+                .filter(notUndefined)
+            )
+            this.widgetMgr.removeInactive(activeWidgetIds)
           }
         )
-
-        // Tell the WidgetManager which widgets still exist. It will remove
-        // widget state for widgets that have been removed.
-        const activeWidgetIds = new Set(
-          Array.from(this.state.elements.getElements())
-            .map(element => getElementId(element))
-            .filter(notUndefined)
-        )
-        this.widgetMgr.removeInactive(activeWidgetIds)
       }
 
       // Tell the ConnectionManager to increment the message cache run
@@ -1273,25 +1278,21 @@ export class App extends PureComponent<Props, State> {
     scriptName: string,
     mainScriptHash: string
   ): void {
-    const { hideSidebarNav, elements } = this.state
-    // Handle hideSidebarNav = true -> retain sidebar elements to avoid flicker
-    const sidebarElements = (hideSidebarNav && elements.sidebar) || undefined
-
     this.setState(
-      {
-        scriptRunId,
-        scriptName,
-        appHash,
-        elements: this.appNavigation.clearPageElements(
-          this.pendingElementsBuffer,
-          mainScriptHash,
-          sidebarElements
-        ),
+      prevState => {
+        const nextElements = this.appNavigation.clearPageElements(
+          prevState.elements,
+          mainScriptHash
+        )
+
+        return {
+          scriptRunId,
+          scriptName,
+          appHash,
+          elements: nextElements,
+        }
       },
       () => {
-        this.pendingElementsBuffer = this.state.elements
-        // Tell the WidgetManager which widgets still exist. It will remove
-        // widget state for widgets that have been removed.
         const activeWidgetIds = new Set(
           Array.from(this.state.elements.getElements())
             .map(element => getElementId(element))
@@ -1341,27 +1342,14 @@ export class App extends PureComponent<Props, State> {
     deltaMsg: Delta,
     metadataMsg: ForwardMsgMetadata
   ): void => {
-    this.pendingElementsBuffer = this.pendingElementsBuffer.applyDelta(
-      this.state.scriptRunId,
-      deltaMsg,
-      metadataMsg
-    )
-
-    if (!this.pendingElementsTimerRunning) {
-      this.pendingElementsTimerRunning = true
-
-      // (BUG #685) When user presses stop, stop adding elements to
-      // the app immediately to avoid race condition.
-      const scriptIsRunning =
-        this.state.scriptRunState === ScriptRunState.RUNNING
-
-      setTimeout(() => {
-        this.pendingElementsTimerRunning = false
-        if (scriptIsRunning) {
-          this.setState({ elements: this.pendingElementsBuffer })
-        }
-      }, ELEMENT_LIST_BUFFER_TIMEOUT_MS)
-    }
+    // Use functional state update to ensure we have latest elements
+    this.setState(prevState => ({
+      elements: prevState.elements.applyDelta(
+        prevState.scriptRunId,
+        deltaMsg,
+        metadataMsg
+      ),
+    }))
   }
 
   /**
@@ -1424,7 +1412,7 @@ export class App extends PureComponent<Props, State> {
     this.closeDialog()
 
     if (!this.isServerConnected()) {
-      log.error("Cannot rerun script when disconnected from server.")
+      LOG.error("Cannot rerun script when disconnected from server.")
       return
     }
 
@@ -1453,7 +1441,7 @@ export class App extends PureComponent<Props, State> {
 
   sendLoadGitInfoBackMsg = (): void => {
     if (!this.isServerConnected()) {
-      log.error("Cannot load git information when disconnected from server.")
+      LOG.error("Cannot load git information when disconnected from server.")
       return
     }
 
@@ -1477,8 +1465,7 @@ export class App extends PureComponent<Props, State> {
     // from the common script
     const nextPageElements = this.appNavigation.clearPageElements(
       elements,
-      mainScriptHash,
-      undefined
+      mainScriptHash
     )
     const activeWidgetIds = new Set(
       Array.from(nextPageElements.getElements())
@@ -1514,7 +1501,7 @@ export class App extends PureComponent<Props, State> {
       // websocket connection to the server (in which case
       // connectionManager.getBaseUriParts() returns undefined), we can't send a
       // rerun backMessage so just return early.
-      log.error("Cannot send rerun backMessage when disconnected from server.")
+      LOG.error("Cannot send rerun backMessage when disconnected from server.")
       return
     }
 
@@ -1522,6 +1509,12 @@ export class App extends PureComponent<Props, State> {
     const { pathname } = baseUriParts
     let queryString = this.getQueryString()
     let pageName = ""
+
+    const contextInfo = {
+      timezone: this.getTimezone(),
+      timezoneOffset: this.getTimezoneOffset(),
+      locale: this.getLocaleLanguage(),
+    }
 
     if (pageScriptHash) {
       // The user specified exactly which page to run. We can simply use this
@@ -1561,6 +1554,7 @@ export class App extends PureComponent<Props, State> {
           pageName,
           fragmentId,
           isAutoRerun,
+          contextInfo,
         },
       })
     )
@@ -1569,7 +1563,7 @@ export class App extends PureComponent<Props, State> {
   /** Requests that the server stop running the script */
   stopScript = (): void => {
     if (!this.isServerConnected()) {
-      log.error("Cannot stop app when disconnected from server.")
+      LOG.error("Cannot stop app when disconnected from server.")
       return
     }
 
@@ -1601,7 +1595,7 @@ export class App extends PureComponent<Props, State> {
       // This will be called if enter is pressed.
       this.openDialog(newDialog)
     } else {
-      log.error("Cannot clear cache: disconnected from server")
+      LOG.error("Cannot clear cache: disconnected from server")
     }
   }
 
@@ -1643,7 +1637,7 @@ export class App extends PureComponent<Props, State> {
       backMsg.type = "clearCache"
       this.sendBackMsg(backMsg)
     } else {
-      log.error("Cannot clear cache: disconnected from server")
+      LOG.error("Cannot clear cache: disconnected from server")
     }
   }
 
@@ -1656,7 +1650,7 @@ export class App extends PureComponent<Props, State> {
       backMsg.type = "appHeartbeat"
       this.sendBackMsg(backMsg)
     } else {
-      log.error("Cannot send app heartbeat: disconnected from server")
+      LOG.error("Cannot send app heartbeat: disconnected from server")
     }
   }
 
@@ -1665,10 +1659,10 @@ export class App extends PureComponent<Props, State> {
    */
   private sendBackMsg = (msg: BackMsg): void => {
     if (this.connectionManager) {
-      log.info(msg)
+      LOG.info(msg)
       this.connectionManager.sendMessage(msg)
     } else {
-      log.error(`Not connected. Cannot send back message: ${msg}`)
+      LOG.error(`Not connected. Cannot send back message: ${msg}`)
     }
   }
 
@@ -1795,6 +1789,18 @@ export class App extends PureComponent<Props, State> {
     this.connectionManager
       ? this.connectionManager.getBaseUriParts()
       : undefined
+
+  getTimezone = (): string => {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  }
+
+  getTimezoneOffset = (): number => {
+    return new Date().getTimezoneOffset()
+  }
+
+  getLocaleLanguage = (): string => {
+    return navigator.language
+  }
 
   getQueryString = (): string => {
     const { queryParams } = this.state
@@ -2042,4 +2048,5 @@ export class App extends PureComponent<Props, State> {
   }
 }
 
-export default withScreencast(App)
+const AppWithScreenCast = withScreencast(App)
+export default AppWithScreenCast

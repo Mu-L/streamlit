@@ -498,7 +498,7 @@ def _fix_column_naming(data_df: DataFrame) -> DataFrame:
         # Pandas automatically names the first column with 0 if it is not named.
         # We rename it to "value" to make it more descriptive if there is only
         # one column in the dataframe.
-        data_df.rename(columns={0: "value"}, inplace=True)
+        data_df = data_df.rename(columns={0: "value"})
     return data_df
 
 
@@ -1260,8 +1260,13 @@ def _unify_missing_values(df: DataFrame) -> DataFrame:
     which is the only missing value type that is supported by all data
     """
     import numpy as np
+    import pandas as pd
 
-    return df.fillna(np.nan).replace([np.nan], [None]).infer_objects()
+    # Replace all recognized nulls (np.nan, pd.NA, NaT) with None
+    # then infer objects without creating a separate copy:
+    # For performance reasons, we could use copy=False here.
+    # However, this is only available in pandas >=2.
+    return df.replace([pd.NA, pd.NaT, np.nan], None).infer_objects()
 
 
 def _pandas_df_to_series(df: DataFrame) -> Series[Any]:

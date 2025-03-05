@@ -137,6 +137,51 @@ def get_button(locator: Locator | Page, label: str | Pattern[str]) -> Locator:
     return element
 
 
+def get_popover(locator: Locator | Page, label: str | Pattern[str]) -> Locator:
+    """Get a popover with the given label.
+
+    Parameters
+    ----------
+
+    locator : Locator
+        The locator to search for the element.
+
+    label : str or Pattern[str]
+        The label of the element to get.
+
+    Returns
+    -------
+    Locator
+        The element.
+    """
+    element = locator.get_by_test_id("stPopover").filter(has_text=label)
+    expect(element).to_be_visible()
+    return element
+
+
+def open_popover(locator: Locator | Page, label: str | Pattern[str]) -> Locator:
+    """Open a popover with the given label and return the popover container.
+
+    Parameters
+    ----------
+
+    locator : Locator
+        The locator to search for the element.
+
+    label : str or Pattern[str]
+        The label of the element to get.
+
+    Returns
+    -------
+    Locator
+        The popover container.
+    """
+    get_popover(locator, label).get_by_role("button").first.click()
+    popover_container = locator.get_by_test_id("stPopoverBody")
+    expect(popover_container).to_be_visible()
+    return popover_container
+
+
 def get_form_submit_button(
     locator: Locator | Page, label: str | Pattern[str]
 ) -> Locator:
@@ -185,6 +230,28 @@ def get_expander(locator: Locator | Page, label: str | Pattern[str]) -> Locator:
     element = locator.get_by_test_id("stExpander").filter(
         has=locator.locator("summary").filter(has_text=label)
     )
+    expect(element).to_be_visible()
+    return element
+
+
+def get_number_input(locator: Locator | Page, label: str | Pattern[str]) -> Locator:
+    """Get a number input with the given label.
+
+    Parameters
+    ----------
+
+    locator : Locator
+        The locator to search for the element.
+
+    label : str or Pattern[str]
+        The label of the element to get.
+
+    Returns
+    -------
+    Locator
+        The number input element.
+    """
+    element = locator.get_by_test_id("stNumberInput").filter(has_text=label)
     expect(element).to_be_visible()
     return element
 
@@ -380,6 +447,33 @@ def click_toggle(
     click_checkbox(page, label)
 
 
+def fill_number_input(
+    locator: Locator | Page,
+    label: str | Pattern[str],
+    value: int,
+) -> None:
+    """Set the value of a number input.
+
+    Parameters
+    ----------
+
+    locator : Locator
+        The locator to search for the number input.
+
+    label : str or Pattern[str]
+        The label of the number input.
+
+    value : int
+        The value to set the number input to.
+    """
+
+    number_input_element = get_number_input(locator, label)
+    number_input_element.locator("input").fill(str(value))
+    # Submit value:
+    number_input_element.press("Enter")
+    wait_for_app_run(locator)
+
+
 def select_radio_option(
     page: Page,
     option: str | Pattern[str],
@@ -488,10 +582,21 @@ def expect_help_tooltip(
     expect(tooltip_content).to_have_text(tooltip_text)
 
     # reset the hovering in case this method is called multiple times in the same test
-    app.get_by_test_id("stApp").hover(
+    reset_hovering(app)
+    expect(tooltip_content).not_to_be_attached()
+
+
+def reset_hovering(locator: Locator | Page):
+    """Reset the hovering of the app.
+
+    This can be used to ensure that there aren't unexpected UI elements visible
+    based on the current mouse position.
+    """
+    page = locator.page if isinstance(locator, Locator) else locator
+
+    page.get_by_test_id("stApp").hover(
         position={"x": 0, "y": 0}, no_wait_after=True, force=True
     )
-    expect(tooltip_content).not_to_be_attached()
 
 
 def expect_script_state(

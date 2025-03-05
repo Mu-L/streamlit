@@ -38,22 +38,22 @@ def configure_snowflake_dark_theme():
         [
             {
                 "family": "Inter",
-                "url": "https://raw.githubusercontent.com/rsms/inter/refs/heads/master/docs/font-files/Inter-Regular.woff2",
+                "url": "./app/static/Inter-Regular.woff2",
                 "weight": 400,
             },
             {
                 "family": "Inter",
-                "url": "https://raw.githubusercontent.com/rsms/inter/refs/heads/master/docs/font-files/Inter-SemiBold.woff2",
+                "url": "./app/static/Inter-SemiBold.woff2",
                 "weight": 600,
             },
             {
                 "family": "Inter",
-                "url": "https://raw.githubusercontent.com/rsms/inter/refs/heads/master/docs/font-files/Inter-Bold.woff2",
+                "url": "./app/static/Inter-Bold.woff2",
                 "weight": 700,
             },
             {
                 "family": "Inter",
-                "url": "https://raw.githubusercontent.com/rsms/inter/refs/heads/master/docs/font-files/Inter-Black.woff2",
+                "url": "./app/static/Inter-Black.woff2",
                 "weight": 900,
             },
             {
@@ -80,7 +80,8 @@ def configure_snowflake_dark_theme():
         '"Monaspace Argon", Menlo, Monaco, Consolas, "Courier New", monospace'
     )
     os.environ["STREAMLIT_CLIENT_TOOLBAR_MODE"] = "minimal"
-    # Todo: add bodyFont, codeFont & fontFaces
+    os.environ["STREAMLIT_THEME_BASE_FONT_SIZE"] = "14"
+    os.environ["STREAMLIT_CLIENT_TOOLBAR_MODE"] = "minimal"
     yield
     del os.environ["STREAMLIT_THEME_BASE"]
     del os.environ["STREAMLIT_THEME_PRIMARY_COLOR"]
@@ -92,6 +93,7 @@ def configure_snowflake_dark_theme():
     del os.environ["STREAMLIT_THEME_FONT_FACES"]
     del os.environ["STREAMLIT_THEME_FONT"]
     del os.environ["STREAMLIT_THEME_CODE_FONT"]
+    del os.environ["STREAMLIT_THEME_BASE_FONT_SIZE"]
     del os.environ["STREAMLIT_CLIENT_TOOLBAR_MODE"]
 
 
